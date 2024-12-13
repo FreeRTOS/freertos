@@ -120,13 +120,13 @@ goto:
 # report if the proof failed. If the proof failed, we separately fail
 # the entire job using the check-cbmc-result rule.
 cbmc.xml: $(ENTRY).goto
-	-cbmc $(CBMCFLAGS) $(SOLVER) --unwinding-assertions --trace --xml-ui @RULE_INPUT@ > $@ 2>&1
+	-cbmc $(CBMCFLAGS) $(SOLVER) --trace --xml-ui @RULE_INPUT@ > $@ 2>&1
 
 property.xml: $(ENTRY).goto
-	cbmc $(CBMCFLAGS) --unwinding-assertions --show-properties --xml-ui @RULE_INPUT@ > $@ 2>&1
+	cbmc $(CBMCFLAGS) --show-properties --xml-ui @RULE_INPUT@ > $@ 2>&1
 
 coverage.xml: $(ENTRY).goto
-	cbmc $(CBMCFLAGS) --cover location --xml-ui @RULE_INPUT@ > $@ 2>&1
+	cbmc $(CBMCFLAGS) --no-standard-checks --malloc-may-fail --malloc-fail-null --cover location --xml-ui @RULE_INPUT@ > $@ 2>&1
 
 cbmc: cbmc.xml
 
