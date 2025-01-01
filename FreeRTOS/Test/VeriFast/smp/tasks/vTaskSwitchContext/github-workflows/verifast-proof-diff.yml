@@ -1,0 +1,8 @@
+name: verifast-proof-diff
+on:   [pull_request]
+jobs:
+  proof_diff:
+    runs-on:  ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - run: Test/VeriFast/tasks/vTaskSwitchContext/diff.sh `pwd`
