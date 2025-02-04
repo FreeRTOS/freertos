@@ -186,7 +186,7 @@ def add_proof_jobs(proof_directory, proof_root):
 
     # Run 3 CBMC tasks
 
-    cbmc_out = str(proof_directory / "cbmc.txt")
+    cbmc_out = str(proof_directory / "cbmc.xml")
     run_cmd([
         "litani", "add-job",
         "--command", "make cbmc",
@@ -301,12 +301,12 @@ def main():
     if not args.no_standalone:
         run_build(args.parallel_jobs)
 
-    out_sym = pathlib.Path("/tmp")/"litani"/"runs"/"latest"
-    out_dir = out_sym.resolve()
+        out_sym = pathlib.Path("/tmp")/"litani"/"runs"/"latest"
+        out_dir = out_sym.resolve()
 
-    local_copy = pathlib.Path("output")/"latest"
-    local_copy.parent.mkdir(exist_ok=True)
-    local_copy.symlink_to(out_dir)
+        local_copy = pathlib.Path("output")/"latest"
+        local_copy.parent.mkdir(exist_ok=True)
+        local_copy.symlink_to(out_dir)
 
 
 if __name__ == "__main__":
