@@ -19,6 +19,6 @@ the demo application file, and start to add in your own application source
 files.
 
 ### See also -
-+ [Quick Start Guide](http://www.freertos.org/FreeRTOS-quick-start-guide.html)
++ [Quick Start Guide](https://freertos.org/Documentation/01-FreeRTOS-quick-start/01-Beginners-guide/02-Quick-start-guide)
 
-+ [FAQ](http://www.freertos.org/FAQHelp.html)
++ [FAQ](https://www.freertos.org/Why-FreeRTOS/FAQs)
