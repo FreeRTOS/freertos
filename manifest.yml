@@ -116,13 +116,6 @@ dependencies:
       url: "https://github.com/FreeRTOS/backoffAlgorithm"
       path: "FreeRTOS-Plus/Source/Utilities/backoff_algorithm"
 
-  - name: "ota"
-    version: "9a8395b"
-    repository:
-      type: "git"
-      url: "https://github.com/aws/ota-for-aws-iot-embedded-sdk"
-      path: "FreeRTOS-Plus/Source/AWS/ota"
-
   - name: "coreSNTP"
     version: "c5face5"
     repository:

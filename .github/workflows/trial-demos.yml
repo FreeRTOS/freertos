@@ -1,0 +1,697 @@
+name: Trial Demos
+on:
+  workflow_dispatch:
+  push:
+    branches: ["**"]
+
+  pull_request:
+    branches: [main]
+env:
+  bashPass: \033[32;1mPASSED -
+  bashWarn: \033[33;1mWARNING -
+  bashFail: \033[31;1mFAILED -
+  bashEnd:  \033[0m
+
+  pwshPass: "`e[32;1mPASSED -"
+  pwshWarn: "`e[33;1mWARNING -"
+  pwshFail: "`e[31;1mFAILED -"
+  pwshEnd:  "`e[0m"
+
+jobs:
+  winsim_corelibs:
+    name: Trial Demos
+    runs-on: windows-2019
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v3
+
+      - env:
+          stepName: Fetch Submodules
+        name: ${{ env.stepName }}
+        shell: bash
+        run: |
+          # ${{ env.stepName }}
+          echo -e "::group::${{ env.stepName }}"
+          git submodule update --checkout --init --depth 1 \
+          FreeRTOS/Source \
+          FreeRTOS-Plus/Source/AWS/device-defender \
+          FreeRTOS-Plus/Source/AWS/device-shadow \
+          FreeRTOS-Plus/Source/AWS/fleet-provisioning \
+          FreeRTOS-Plus/Source/AWS/jobs \
+          FreeRTOS-Plus/Source/AWS/sigv4 \
+          FreeRTOS-Plus/Source/FreeRTOS-Cellular-Interface \
+          FreeRTOS-Plus/Source/FreeRTOS-Cellular-Modules/bg96 \
+          FreeRTOS-Plus/Source/FreeRTOS-Cellular-Modules/hl7802 \
+          FreeRTOS-Plus/Source/FreeRTOS-Cellular-Modules/sara-r4 \
+          FreeRTOS-Plus/Source/Application-Protocols/coreHTTP \
+          FreeRTOS-Plus/Source/Application-Protocols/coreMQTT \
+          FreeRTOS-Plus/Source/Application-Protocols/coreMQTT-Agent \
+          FreeRTOS-Plus/Source/Application-Protocols/coreSNTP \
+          FreeRTOS-Plus/Source/FreeRTOS-Plus-TCP \
+          FreeRTOS-Plus/Source/Utilities/backoff_algorithm \
+          FreeRTOS-Plus/Source/coreJSON \
+          FreeRTOS-Plus/Source/corePKCS11 \
+          FreeRTOS-Plus/ThirdParty/mbedtls \
+          FreeRTOS-Plus/ThirdParty/tinycbor \
+          FreeRTOS-Plus/ThirdParty/wolfSSL \
+          FreeRTOS-Plus/ThirdParty/glib \
+          FreeRTOS-Plus/ThirdParty/libslirp
+
+          git -C FreeRTOS-Plus/Source/Application-Protocols/coreHTTP submodule update --checkout --init --depth 1 source/dependency/3rdparty/llhttp
+          git -C FreeRTOS-Plus/Source/corePKCS11 submodule update --checkout --init --depth 1 source/dependency/3rdparty/pkcs11
+          echo "::endgroup::"
+          echo -e "${{ env.bashPass }} ${{ env.stepName }} ${{ env.bashEnd }} "
+
+      - name: Add msbuild to PATH
+        uses: microsoft/setup-msbuild@v1.1
+      
+      - name: Install Common Dependencies
+        run: |
+          choco install vcredist140 -y
+          choco install windows-sdk-10.0 -y
+
+      - env:
+          stepName: Install Glib
+        name: ${{ env.stepName }}
+        working-directory: FreeRTOS-Plus\ThirdParty\glib
+        run: |
+          # ${{ env.stepName }}
+          echo "::group::${{ env.stepName }}"
+          Push-Location
+          Get-Location
+          & "C:\Program Files (x86)\Microsoft Visual Studio\2019\Enterprise\Common7\Tools\Launch-VsDevShell.ps1"
+          Get-Location
+          Pop-Location
+
+          pip install meson
+          meson setup build --backend=vs2019 -Dselinux=disabled -Dxattr=false -Dbsymbolic_functions=false -Dtests=false -Dglib_debug=disabled -Dglib_assert=false --buildtype=release
+          meson compile -C build
+
+          echo "::endgroup::"
+          if(Test-Path -Path build\glib\glib-2.0.lib) {
+            echo "${{ env.pwshPass }} ${{ env.stepName }} ${{ env.pwshEnd }}"
+            exit 0
+          }else {
+            echo "${{ env.pwshFail }} ${{ env.stepName }} ${{ env.pwshEnd }}"
+            exit 1
+          }
+
+      - name: Generate SSL credentials
+        id: generate-credentials
+        uses: FreeRTOS/CI-CD-GitHub-Actions/ssl-credential-creator@main
+
+      - name: Query CI host IP address
+        id: get-ip
+        run: |
+          # Query the device's IP address
+          $SERVER_IP = (Get-NetIPAddress -AddressFamily IPv4 | Where-Object { $_.IPAddress -notmatch '127.0.0.1' } | Select-Object -First 1 -ExpandProperty IPAddress)
+          Write-Host "Device IP address: $SERVER_IP"
+          echo "server_ip=$SERVER_IP" >> $env:GITHUB_ENV
+        shell: pwsh
+
+      - name: Start localhost MQTT broker
+        id: mqtt-broker
+        uses: FreeRTOS/CI-CD-GitHub-Actions/localhost-mqtt-broker@main
+        with:
+          host_address: ${{ env.server_ip }}
+          root-ca-cert-path:
+            ${{ steps.generate-credentials.outputs.root-ca-cert-path }}
+          server-priv-key-path:
+            ${{ steps.generate-credentials.outputs.server-priv-key-path }}
+          server-cert-path:
+            ${{ steps.generate-credentials.outputs.server-cert-path }}
+
+      - env:
+          stepName: Update main.c to force stdout to write immediately
+        name: ${{ env.stepName }}
+        working-directory: FreeRTOS-Plus/Demo/coreMQTT_Windows_Simulator/Common
+        run: |
+          $content = Get-Content -Path 'main.c' -Raw
+          $newContent = $content -replace 'int\s+main(.*?)void(.*?)\r?\n\s*{', 'int main( void ){setvbuf( stdout, NULL, _IONBF, 0 );'
+          $newContent | Set-Content -Path 'main.c'
+
+      - env:
+          stepName: Configure MQTT Multi-Task Demo
+        name: ${{ env.stepName }}
+        shell: bash
+        working-directory: FreeRTOS-Plus/Demo/coreMQTT_Windows_Simulator/MQTT_Multitask
+        run: |
+          # ${{ env.stepName }}
+          echo -e "::group::${{ env.stepName }}"
+          echo '#ifndef DEMO_CONFIG_H_TEST_BUILD' | tee -a demo_config.h
+          echo '  #define DEMO_CONFIG_H_TEST_BUILD' | tee -a demo_config.h
+          echo '  #define democonfigCLIENT_CERTIFICATE_PEM ""' | tee -a demo_config.h
+          echo '  #define democonfigCLIENT_IDENTIFIER ""' | tee -a demo_config.h
+          echo '  #define democonfigCLIENT_PRIVATE_KEY_PEM ""' | tee -a demo_config.h
+          echo '  #define democonfigMQTT_BROKER_ENDPOINT ""' | tee -a demo_config.h
+          echo '  #define democonfigMQTT_BROKER_PORT ( 8883 )' | tee -a demo_config.h
+          echo '  #define democonfigROOT_CA_PEM ""' | tee -a demo_config.h
+          echo '#endif /* DEMO_CONFIG_H_TEST_BUILD */' | tee -a demo_config.h
+          echo "::endgroup::"
+          echo -e "${{ env.bashPass }} ${{ env.stepName }} ${{ env.bashEnd }} "
+
+      - env:
+          stepName: Build MQTT Multi-Task Demo
+        name: ${{ env.stepName }}
+        id: build-mqtt-multitask-demo
+        working-directory: FreeRTOS-Plus/Demo/coreMQTT_Windows_Simulator/MQTT_Multitask
+        run: |
+          # ${{ env.stepName }}
+          echo "::group::${{ env.stepName }}"
+          msbuild mqtt_multitask_demo.sln -t:rebuild -property:Configuration=Debug -property:Platform=Win32 -m
+          if($? -eq 1) {
+            echo "::endgroup::"
+            echo "${{ env.pwshPass }} ${{ env.stepName }} ${{ env.pwshEnd }}"
+          }else {
+            echo "::endgroup::"
+            echo "${{ env.pwshFail }} ${{ env.stepName }} ${{ env.pwshEnd }}"
+            exit 1
+          }
+      
+      - env:
+          stepName: Run and monitor MQTT Multi-Task Demo
+        name: ${{ env.stepName }}
+        uses: FreeRTOS/CI-CD-GitHub-Actions/executable-monitor@main
+        with:
+          exe-path: FreeRTOS-Plus/Demo/coreMQTT_Windows_Simulator/MQTT_Multitask/Debug/MQTT_Multitask.exe
+          log-dir: demo_run_logs
+          timeout-seconds: 90
+          success-line: "Demo completed successfully"
+          retry-attempts: 3
+
+      - env:
+          stepName: Configure corePKCS11_MQTT_Mutual_Auth_Windows_Simulator
+        name: ${{ env.stepName }}
+        shell: bash
+        working-directory: FreeRTOS-Plus/Demo/corePKCS11_MQTT_Mutual_Auth_Windows_Simulator
+        run: |
+          # ${{ env.stepName }}
+          echo -e "::group::${{ env.stepName }}"
+          echo '#ifndef DEMO_CONFIG_H_TEST_BUILD' | tee -a demo_config.h
+          echo '  #define DEMO_CONFIG_H_TEST_BUILD' | tee -a demo_config.h
+          echo '  #define democonfigCLIENT_CERTIFICATE_PEM ""' | tee -a demo_config.h
+          echo '  #define democonfigCLIENT_IDENTIFIER ""' | tee -a demo_config.h
+          echo '  #define democonfigTHING_NAME ""' | tee -a demo_config.h
+          echo '  #define democonfigPROVISIONING_TEMPLATE_NAME ""' | tee -a demo_config.h
+          echo '  #define democonfigCLIENT_PRIVATE_KEY_PEM ""' | tee -a demo_config.h
+          echo '  #define democonfigCLIENT_PRIVATE_KEY_PEM ""' | tee -a demo_config.h
+          echo '  #define democonfigMQTT_BROKER_ENDPOINT ""' | tee -a demo_config.h
+          echo '  #define democonfigMQTT_BROKER_PORT ( 8883 )' | tee -a demo_config.h
+          echo '  #define democonfigROOT_CA_PEM ""' | tee -a demo_config.h
+          echo '#endif /* DEMO_CONFIG_H_TEST_BUILD */' | tee -a demo_config.h
+          echo "::endgroup::"
+          echo -e "${{ env.bashPass }} ${{ env.stepName }} ${{ env.bashEnd }} "
+
+      - env:
+          stepName: Build corePKCS11 + coreMQTT Mutual Auth Demo
+        name: ${{ env.stepName }}
+        working-directory: FreeRTOS-Plus/Demo/corePKCS11_MQTT_Mutual_Auth_Windows_Simulator
+        run: |
+          # ${{ env.stepName }}
+          echo "::group::${{ env.stepName }}"
+          msbuild corePKCS11_MQTT_Mutual_Auth.sln -t:rebuild -property:Configuration=Debug_with_Libslirp -property:Platform=Win32 -m
+
+      - env:
+          stepName: Run and monitor corePKCS11 + coreMQTT Mutual Auth Demo
+        name: ${{ env.stepName }}
+        uses: FreeRTOS/CI-CD-GitHub-Actions/executable-monitor@main
+        with:
+          exe-path: FreeRTOS-Plus/Demo/corePKCS11_MQTT_Mutual_Auth_Windows_Simulator/Debug_with_Libslirp/corePKCS11_MQTT_Mutual_Auth.exe
+          log-dir: demo_run_logs
+          timeout-seconds: 90
+          success-line: "Demo completed successfully"
+          retry-attempts: 3
+
+  winsim_aws_iot:
+    name: AWS IoT Windows Simulator Demos
+    runs-on: windows-2019
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v3
+
+      - env:
+          stepName: Fetch Submodules
+        name: ${{ env.stepName }}
+        shell: bash
+        run: |
+          # ${{ env.stepName }}
+          echo -e "::group::${{ env.stepName }}"
+          git submodule update --checkout --init --depth 1 \
+          FreeRTOS/Source \
+          FreeRTOS-Plus/Source/AWS/device-defender \
+          FreeRTOS-Plus/Source/AWS/device-shadow \
+          FreeRTOS-Plus/Source/AWS/fleet-provisioning \
+          FreeRTOS-Plus/Source/AWS/jobs \
+          FreeRTOS-Plus/Source/AWS/sigv4 \
+          FreeRTOS-Plus/Source/FreeRTOS-Cellular-Interface \
+          FreeRTOS-Plus/Source/FreeRTOS-Cellular-Modules/bg96 \
+          FreeRTOS-Plus/Source/FreeRTOS-Cellular-Modules/hl7802 \
+          FreeRTOS-Plus/Source/FreeRTOS-Cellular-Modules/sara-r4 \
+          FreeRTOS-Plus/Source/Application-Protocols/coreHTTP \
+          FreeRTOS-Plus/Source/Application-Protocols/coreMQTT \
+          FreeRTOS-Plus/Source/Application-Protocols/coreMQTT-Agent \
+          FreeRTOS-Plus/Source/Application-Protocols/coreSNTP \
+          FreeRTOS-Plus/Source/FreeRTOS-Plus-TCP \
+          FreeRTOS-Plus/Source/Utilities/backoff_algorithm \
+          FreeRTOS-Plus/Source/coreJSON \
+          FreeRTOS-Plus/Source/corePKCS11 \
+          FreeRTOS-Plus/ThirdParty/mbedtls \
+          FreeRTOS-Plus/ThirdParty/tinycbor \
+          FreeRTOS-Plus/ThirdParty/wolfSSL
+
+          git -C FreeRTOS-Plus/Source/Application-Protocols/coreHTTP submodule update --checkout --init --depth 1 source/dependency/3rdparty/llhttp
+          git -C FreeRTOS-Plus/Source/corePKCS11 submodule update --checkout --init --depth 1 source/dependency/3rdparty/pkcs11
+          echo "::endgroup::"
+          echo -e "${{ env.bashPass }} ${{ env.stepName }} ${{ env.bashEnd }} "
+
+      - name: Add msbuild to PATH
+        uses: microsoft/setup-msbuild@v1.1
+
+      - env:
+          stepName: Adjust Configuration files
+        name: ${{ env.stepName }}
+        shell: bash
+        working-directory: FreeRTOS-Plus/Demo/AWS
+        run: |
+          # ${{ env.stepName }}
+          echo -e "::group::${{ env.stepName }}"
+          echo '#ifndef DEMO_CONFIG_H_TEST_BUILD' | tee -a */*/demo_config.h
+          echo '  #define DEMO_CONFIG_H_TEST_BUILD' | tee -a */*/demo_config.h
+          echo '  #define democonfigCLIENT_CERTIFICATE_PEM ""' | tee -a */*/demo_config.h
+          echo '  #define democonfigCLIENT_IDENTIFIER ""' | tee -a */*/demo_config.h
+          echo '  #define democonfigTHING_NAME ""' | tee -a */*/demo_config.h
+          echo '  #define democonfigPROVISIONING_TEMPLATE_NAME ""' | tee -a */*/demo_config.h
+          echo '  #define democonfigCLIENT_PRIVATE_KEY_PEM ""' | tee -a */*/demo_config.h
+          echo '  #define democonfigCLIENT_PRIVATE_KEY_PEM ""' | tee -a */*/demo_config.h
+          echo '  #define democonfigMQTT_BROKER_ENDPOINT ""' | tee -a */*/demo_config.h
+          echo '  #define democonfigMQTT_BROKER_PORT ( 8883 )' | tee -a */*/demo_config.h
+          echo '  #define democonfigROOT_CA_PEM ""' | tee -a */*/demo_config.h
+          echo '#endif /* DEMO_CONFIG_H_TEST_BUILD */' | tee -a */*/demo_config.h
+          echo "::endgroup::"
+          echo -e "${{ env.bashPass }} ${{ env.stepName }} ${{ env.bashEnd }} "
+
+      - env:
+          stepName: Build AWS IoT Device Defender Demo
+        name: ${{ env.stepName }}
+        working-directory: FreeRTOS-Plus/Demo/AWS/Device_Defender_Windows_Simulator/Device_Defender_Demo
+        run: |
+          # ${{ env.stepName }}
+          echo "::group::${{ env.stepName }}"
+          msbuild defender_demo.sln -t:rebuild -property:Configuration=Debug -m
+          if($? -eq 1) {
+            echo "::endgroup::"
+            echo "${{ env.pwshPass }} ${{ env.stepName }} ${{ env.pwshEnd }}"
+          }else {
+            echo "::endgroup::"
+            echo "${{ env.pwshFail }} ${{ env.stepName }} ${{ env.pwshEnd }}"
+            exit 1
+          }
+
+      - env:
+          stepName: Build AWS IoT Device Shadow Demo
+        name: ${{ env.stepName }}
+        working-directory: FreeRTOS-Plus/Demo/AWS/Device_Shadow_Windows_Simulator/Device_Shadow_Demo
+        run: |
+          # ${{ env.stepName }}
+          echo "::group::${{ env.stepName }}"
+          msbuild shadow_main_demo.sln -t:rebuild -property:Configuration=Debug -m
+          if($? -eq 1) {
+            echo "::endgroup::"
+            echo "${{ env.pwshPass }} ${{ env.stepName }} ${{ env.pwshEnd }}"
+          }else {
+            echo "::endgroup::"
+            echo "${{ env.pwshFail }} ${{ env.stepName }} ${{ env.pwshEnd }}"
+            exit 1
+          }
+
+      - env:
+          stepName: Build AWS IoT Fleet Provisioning Demo
+        name: ${{ env.stepName }}
+        working-directory: FreeRTOS-Plus/Demo/AWS/Fleet_Provisioning_Windows_Simulator/CSR_Demo
+        run: |
+          # ${{ env.stepName }}
+          echo "::group::${{ env.stepName }}"
+          msbuild fleet_provisioning_demo.sln -t:rebuild -property:Configuration=Debug -m
+          if($? -eq 1) {
+            echo "::endgroup::"
+            echo "${{ env.pwshPass }} ${{ env.stepName }} ${{ env.pwshEnd }}"
+          }else {
+            echo "::endgroup::"
+            echo "${{ env.pwshFail }} ${{ env.stepName }} ${{ env.pwshEnd }}"
+            exit 1
+          }
+
+      - env:
+          stepName: Build AWS IoT Jobs Demo
+        name: ${{ env.stepName }}
+        working-directory: FreeRTOS-Plus/Demo/AWS/Jobs_Windows_Simulator/Jobs_Demo
+        run: |
+          # ${{ env.stepName }}
+          echo "::group::${{ env.stepName }}"
+          msbuild jobs_demo.sln -t:rebuild -property:Configuration=Debug -m
+          if($? -eq 1) {
+            echo "::endgroup::"
+            echo "${{ env.pwshPass }} ${{ env.stepName }} ${{ env.pwshEnd }}"
+          }else {
+            echo "::endgroup::"
+            echo "${{ env.pwshFail }} ${{ env.stepName }} ${{ env.pwshEnd }}"
+            exit 1
+          }
+
+  plus_tcp_posix:
+    name: FreeRTOS+TCP Posix Simulator Demo
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v3
+
+      - env:
+          stepName: Fetch Submodules
+        shell: bash
+        run: |
+          # ${{ env.stepName }}
+          echo -e "::group::${{ env.stepName }}"
+          git submodule update --checkout --init --depth 1 \
+          FreeRTOS/Source \
+          FreeRTOS-Plus/Source/FreeRTOS-Plus-TCP \
+          FreeRTOS-Plus/Source/FreeRTOS-Plus-Trace
+          echo "::endgroup::"
+          echo -e "${{ env.bashPass }} ${{ env.stepName }} ${{ env.bashEnd }} "
+
+      - env:
+          stepName: Install prerequisite packages
+        name: ${{ env.stepName }}
+        run: |
+          # ${{ env.stepName }}
+          echo -e "::group::${{ env.stepName }}"
+          sudo apt-get install -y git build-essential libglib2.0-dev libslirp-dev
+          echo "::endgroup::"
+          echo -e "${{ env.bashPass }} ${{ env.stepName }} ${{ env.bashEnd }} "
+
+      - name: Query CI host IP address
+        id: get-ip
+        run: |
+          # Query the device's IP address
+          SERVER_IP="$(ip addr show | grep "inet " | grep -v "127.0.0.1" | awk '{print $2}' | cut -d/ -f1 | head -n 1)"
+          echo "Device IP address: $SERVER_IP"
+          echo "server_ip=\"$SERVER_IP\"" >> $GITHUB_ENV
+
+      - name: Start localhost Echo server
+        id: echo-server
+        uses: FreeRTOS/CI-CD-GitHub-Actions/localhost-echo-server@main
+        with:
+          host_address: ${{ env.server_ip }}
+          port_number: 5000
+
+      - env:
+          stepName: Build FreeRTOS+TCP Echo Posix Demo
+        name: ${{ env.stepName }}
+        id: build-echo-posix-demo
+        working-directory: FreeRTOS-Plus/Demo/FreeRTOS_Plus_TCP_Echo_Posix
+        run: |
+          # ${{ env.stepName }}
+          echo -e "::group::${{ env.stepName }}"
+          sed -i -z "s/define[[:space:]]*echoECHO_PORT[[:space:]]*([[:space:]]*[0-9]\+[[:space:]]*)/define echoECHO_PORT ( 5000 )/g" TCPEchoClient_SingleTasks.c
+          sed -i -z "s/int[[:space:]]*main[[:space:]]*([[:space:]]*void[[:space:]]*)\n{/int main( void ){setvbuf( stdout, NULL, _IONBF, 0 );/g" main.c
+          sed -i "s/^#define configECHO_SERVER_ADDR .*/#define configECHO_SERVER_ADDR \"${{ env.server_ip }}\"/" FreeRTOSConfig.h
+          git diff
+          make -j TRACE_ON_ENTER=0
+          echo "::endgroup::"
+          echo -e "${{ env.bashPass }} ${{ env.stepName }} ${{ env.bashEnd }} "
+
+      - env:
+          stepName: Run and monitor FreeRTOS+TCP Echo Posix Demo
+        name: ${{ env.stepName }}
+        uses: FreeRTOS/CI-CD-GitHub-Actions/executable-monitor@main
+        with:
+          exe-path: FreeRTOS-Plus/Demo/FreeRTOS_Plus_TCP_Echo_Posix/build/posix_tcp_demo
+          log-dir: demo_run_logs
+          timeout-seconds: 30
+          success-line: "Received correct data 3 times"
+          retry-attempts: 3
+
+  plus_tcp_arm:
+    name: FreeRTOS+TCP QEMU ARM MPS2 AN385
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v3
+
+      - env:
+          stepName: Fetch Submodules
+        name: ${{ env.stepName }}
+        shell: bash
+        run: |
+          # ${{ env.stepName }}
+          echo -e "::group::${{ env.stepName }}"
+          git submodule update --checkout --init --depth 1 \
+          FreeRTOS/Source \
+          FreeRTOS-Plus/Source/FreeRTOS-Plus-TCP
+          echo "::endgroup::"
+          echo -e "${{ env.bashPass }} ${{ env.stepName }} ${{ env.bashEnd }} "
+
+      - env:
+          stepName: Install prerequisite packages
+        name: ${{ env.stepName }}
+        run: |
+          # ${{ env.stepName }}
+          echo -e "::group::${{ env.stepName }}"
+          sudo apt-get install -y git make gcc-arm-none-eabi
+          echo "::endgroup::"
+          echo -e "${{ env.bashPass }} ${{ env.stepName }} ${{ env.bashEnd }} "
+
+      - env:
+          stepName: Build FreeRTOS+TCP Minimal Demo
+        name: ${{ env.stepName }}
+        working-directory: FreeRTOS-Plus/Demo/FreeRTOS_Plus_TCP_Echo_Qemu_mps2
+        run: |
+          # ${{ env.stepName }}
+          echo -e "::group::${{ env.stepName }}"
+          make -j
+          echo "::endgroup::"
+          echo -e "${{ env.bashPass }} ${{ env.stepName }} ${{ env.bashEnd }} "
+
+  plus_tcp_winsim:
+    name: FreeRTOS+TCP Windows Simulator Demos
+    runs-on: windows-2019
+    continue-on-error: true
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v3
+
+      - env:
+          stepName: Fetch Submodules
+        name: ${{ env.stepName }}
+        shell: bash
+        run: |
+          # ${{ env.stepName }}
+          echo -e "::group::${{ env.stepName }}"
+          git submodule update --checkout --init --depth 1 \
+          FreeRTOS/Source \
+          FreeRTOS-Plus/Source/FreeRTOS-Plus-TCP \
+          FreeRTOS-Plus/ThirdParty/mbedtls \
+          FreeRTOS-Plus/ThirdParty/wolfSSL \
+          FreeRTOS-Plus/ThirdParty/glib \
+          FreeRTOS-Plus/ThirdParty/libslirp
+          echo "::endgroup::"
+          echo -e "${{ env.bashPass }} ${{ env.stepName }} ${{ env.bashEnd }} "
+
+      - name: Add msbuild to PATH
+        uses: microsoft/setup-msbuild@v1.1
+
+      - env:
+          stepName: Install Glib
+        name: ${{ env.stepName }}
+        working-directory: FreeRTOS-Plus\ThirdParty\glib
+        run: |
+          # ${{ env.stepName }}
+          echo "::group::${{ env.stepName }}"
+          Push-Location
+          Get-Location
+          & "C:\Program Files (x86)\Microsoft Visual Studio\2019\Enterprise\Common7\Tools\Launch-VsDevShell.ps1"
+          Get-Location
+          Pop-Location
+
+          pip install meson
+          meson setup build --backend=vs2019 -Dselinux=disabled -Dxattr=false -Dbsymbolic_functions=false -Dtests=false -Dglib_debug=disabled -Dglib_assert=false --buildtype=release
+          meson compile -C build
+
+          echo "::endgroup::"
+          if(Test-Path -Path build\glib\glib-2.0.lib) {
+            echo "${{ env.pwshPass }} ${{ env.stepName }} ${{ env.pwshEnd }}"
+            exit 0
+          }else {
+            echo "${{ env.pwshPass }} ${{ env.stepName }} ${{ env.pwshEnd }}"
+            exit 1
+          }
+
+      - name: Query CI host IP address
+        id: get-ip
+        run: |
+          # Query the device's IP address
+          $SERVER_IP = (Get-NetIPAddress -AddressFamily IPv4 | Where-Object { $_.IPAddress -notmatch '127.0.0.1' } | Select-Object -First 1 -ExpandProperty IPAddress)
+          Write-Host "Device IP address: $SERVER_IP"
+          echo "server_ip=$SERVER_IP" >> $env:GITHUB_ENV
+        shell: pwsh
+
+      - name: Start localhost Echo server
+        id: echo-server
+        uses: FreeRTOS/CI-CD-GitHub-Actions/localhost-echo-server@main
+        with:
+          host_address: ${{ env.server_ip }}
+          port_number: 5000
+
+      - env:
+          stepName: Build FreeRTOS+TCP Minimal Demo
+        name: ${{ env.stepName }}
+        id: build-plus-tcp-minimal-demo
+        working-directory: FreeRTOS-Plus/Demo/FreeRTOS_Plus_TCP_Minimal_Windows_Simulator
+        run: |
+          # ${{ env.stepName }}
+          echo "::group::${{ env.stepName }}"
+          $content = Get-Content -Path 'DemoTasks\TCPEchoClient_SingleTasks.c' -Raw
+          $newContent = $content -replace '#define\s+echoECHO_PORT.*', '#define echoECHO_PORT	( 5000 )'
+          $newContent | Set-Content -Path 'DemoTasks\TCPEchoClient_SingleTasks.c'
+          $content = Get-Content -Path 'tcp_echo_config.h' -Raw
+          $newContent = $content -replace '#define\s+configECHO_SERVER_ADDR.*', '#define configECHO_SERVER_ADDR  "${{ env.server_ip }}"'
+          $newContent | Set-Content -Path 'tcp_echo_config.h'
+          $content = Get-Content -Path 'main.c' -Raw
+          $newContent = $content -replace 'int\s+main(.*?)void(.*?)\r?\n\s*{', 'int main( void ){setvbuf( stdout, NULL, _IONBF, 0 );'
+          $newContent | Set-Content -Path 'main.c'
+          msbuild FreeRTOS_Plus_TCP_Minimal.sln -t:rebuild -property:Configuration=Debug_with_Libslirp -property:Platform=Win32 -m
+          echo "${{ env.pwshPass }} ${{ env.stepName }} ${{ env.pwshEnd }}"
+
+      - env:
+          stepName: Run and monitor FreeRTOS+TCP Minimal Demo
+        name: ${{ env.stepName }}
+        uses: FreeRTOS/CI-CD-GitHub-Actions/executable-monitor@main
+        with:
+          exe-path: FreeRTOS-Plus/Demo/FreeRTOS_Plus_TCP_Minimal_Windows_Simulator/Debug_with_Libslirp/FreeRTOS_Plus_TCP_Minimal.exe
+          log-dir: demo_run_logs
+          timeout-seconds: 30
+          success-line: "Received correct data 3 times"
+          retry-attempts: 3
+
+      - name: Generate SSL credentials
+        id: generate-credentials
+        uses: FreeRTOS/CI-CD-GitHub-Actions/ssl-credential-creator@main
+
+      - env:
+          stepName: Configure FreeRTOS+WolfSSL Demo
+        name: ${{ env.stepName }}
+        shell: bash
+        working-directory: FreeRTOS-Plus/Demo/FreeRTOS_Plus_WolfSSL_Windows_Simulator
+        run: |
+          # ${{ env.stepName }}
+          echo "::group::${{ env.stepName }}"
+          cp ${{ steps.generate-credentials.outputs.root-ca-cert-path }} .
+          cp ${{ steps.generate-credentials.outputs.server-cert-path }} .
+          cp ${{ steps.generate-credentials.outputs.server-priv-key-path }} .
+          sed -i -z "s/ca-cert.pem/root_ca_cert.crt/g" SecureTCPServerTask.c
+          sed -i -z "s/server-cert.pem/server_cert.crt/g" SecureTCPServerTask.c
+          sed -i -z "s/server-key.pem/server_priv_key.key/g" SecureTCPServerTask.c
+          sed -i -z "s/ca-cert.pem/root_ca_cert.crt/g" SecureTCPClientTask.c
+          echo "::endgroup::"
+          echo -e "${{ env.bashPass }} ${{ env.stepName }} ${{ env.bashEnd }} "
+
+      - env:
+          stepName: Build FreeRTOS+WolfSSL Demo
+        name: ${{ env.stepName }}
+        id: build-freertos-wolfssl-demo
+        working-directory: FreeRTOS-Plus/Demo/FreeRTOS_Plus_WolfSSL_Windows_Simulator
+        continue-on-error: true
+        run: |
+          # ${{ env.stepName }}
+          echo "::group::${{ env.stepName }}"
+          msbuild FreeRTOS_Plus_WolfSSL.sln -t:rebuild -property:Configuration=Debug_with_Libslirp -property:Platform=Win32 -m
+          echo "${{ env.pwshPass }} ${{ env.stepName }} ${{ env.pwshEnd }}"
+
+      - env:
+          stepName: Run and monitor FreeRTOS+WolfSSL Demo
+        name: ${{ env.stepName }}
+        uses: FreeRTOS/CI-CD-GitHub-Actions/executable-monitor@main
+        with:
+          exe-path: FreeRTOS-Plus/Demo/FreeRTOS_Plus_WolfSSL_Windows_Simulator/Debug_with_Libslirp/FreeRTOS_Plus_WolfSSL_Windows_Simulator.exe
+          log-dir: demo_run_logs
+          timeout-seconds: 60
+          success-line:
+            "Received by the secure server: Message number 9"
+          retry-attempts: 3
+
+      - env:
+          stepName: Build FreeRTOS+TCP UDP CLI Demo
+        name: ${{ env.stepName }}
+        working-directory: FreeRTOS-Plus/Demo/FreeRTOS_Plus_TCP_UDP_Mode_CLI_Windows_Simulator
+        run: |
+          # ${{ env.stepName }}
+          echo "::group::${{ env.stepName }}"
+          msbuild FreeRTOS_Plus_UDP_with_CLI.sln -t:rebuild -property:Configuration=Debug -m
+          echo "${{ env.pwshPass }} ${{ env.stepName }} ${{ env.pwshEnd }}"
+
+  winsim_plus_demos:
+    name: FreeRTOS+CLI Windows Simulator Demos
+    runs-on: windows-2019
+    continue-on-error: true
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v3
+
+      - env:
+          stepName: Fetch Submodules
+        name: ${{ env.stepName }}
+        shell: bash
+        run: |
+          # ${{ env.stepName }}
+          echo -e "::group::${{ env.stepName }}"
+          git submodule update --checkout --init --depth 1 \
+          FreeRTOS/Source \
+          FreeRTOS-Plus/Source/AWS/device-defender \
+          FreeRTOS-Plus/Source/AWS/device-shadow \
+          FreeRTOS-Plus/Source/AWS/fleet-provisioning \
+          FreeRTOS-Plus/Source/AWS/jobs \
+          FreeRTOS-Plus/Source/AWS/sigv4 \
+          FreeRTOS-Plus/Source/FreeRTOS-Cellular-Interface \
+          FreeRTOS-Plus/Source/FreeRTOS-Cellular-Modules/bg96 \
+          FreeRTOS-Plus/Source/FreeRTOS-Cellular-Modules/hl7802 \
+          FreeRTOS-Plus/Source/FreeRTOS-Cellular-Modules/sara-r4 \
+          FreeRTOS-Plus/Source/Application-Protocols/coreHTTP \
+          FreeRTOS-Plus/Source/Application-Protocols/coreMQTT \
+          FreeRTOS-Plus/Source/Application-Protocols/coreMQTT-Agent \
+          FreeRTOS-Plus/Source/Application-Protocols/coreSNTP \
+          FreeRTOS-Plus/Source/FreeRTOS-Plus-TCP \
+          FreeRTOS-Plus/Source/FreeRTOS-Plus-Trace \
+          FreeRTOS-Plus/Source/Utilities/backoff_algorithm \
+          FreeRTOS-Plus/Source/coreJSON \
+          FreeRTOS-Plus/Source/corePKCS11 \
+          FreeRTOS-Plus/ThirdParty/mbedtls \
+          FreeRTOS-Plus/ThirdParty/tinycbor \
+          FreeRTOS-Plus/ThirdParty/wolfSSL
+
+          git -C FreeRTOS-Plus/Source/Application-Protocols/coreHTTP submodule update --checkout --init --depth 1 source/dependency/3rdparty/llhttp
+          git -C FreeRTOS-Plus/Source/corePKCS11 submodule update --checkout --init --depth 1 source/dependency/3rdparty/pkcs11
+          echo "::endgroup::"
+          echo -e "${{ env.bashPass }} ${{ env.stepName }} ${{ env.bashEnd }} "
+
+      - name: Add msbuild to PATH
+        uses: microsoft/setup-msbuild@v1.1
+
+      - env:
+          stepName: Build FreeRTOS+CLI+Trace Demo
+        name: ${{ env.stepName }}
+        working-directory: FreeRTOS-Plus/Demo/FreeRTOS_Plus_CLI_with_Trace_Windows_Simulator
+        run: |
+          # ${{ env.stepName }}
+          echo "::group::Build FreeRTOS+CLI+Trace Demo"
+          msbuild FreeRTOS_Plus_CLI_with_Trace.sln -t:rebuild -property:Configuration=Debug -m
+          echo "::endgroup::"
+          echo "${{ env.pwshPass }} ${{ env.stepName }} ${{ env.pwshEnd }}"
+
+      - env:
+          stepName: Build FreeRTOS+RelianceEdge+CLI Demo
+        name: ${{ env.stepName }}
+        working-directory: FreeRTOS-Plus/Demo/FreeRTOS_Plus_Reliance_Edge_and_CLI_Windows_Simulator
+        run: |
+          # ${{ env.stepName }}
+          echo "::group::${{ env.stepName }}"
+          msbuild FreeRTOS_Plus_Reliance_Edge_with_CLI.sln -t:rebuild -property:Configuration=Debug -m
+          echo "${{ env.pwshPass }} ${{ env.stepName }} ${{ env.pwshEnd }}"
