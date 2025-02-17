@@ -451,16 +451,15 @@ void vLoggingPrintf( const char * pcFormat,
             if( xLength2 >= ( xLength + sizeof( xLength ) ) )
             {
                 /* First write in the length of the data, then write in the data
-                 * itself.  Raising the thread priority is used as a critical section
-                 * as there are potentially multiple writers.  The stream buffer is
-                 * only thread safe when there is a single writer (likewise for
-                 * reading from the buffer). */
-                xCurrentTask = GetCurrentThread();
-                iOriginalPriority = GetThreadPriority( xCurrentTask );
-                SetThreadPriority( GetCurrentThread(), THREAD_PRIORITY_TIME_CRITICAL );
+                 * itself. We are directly using taskENTER_CRITICAL() and
+                 * taskEXIT_CRITICAL() to ensure the buffer writes are inside a
+                 * critical section. */
+                taskENTER_CRITICAL();
+
                 uxStreamBufferAdd( xLogStreamBuffer, 0, ( const uint8_t * ) &( xLength ), sizeof( xLength ) );
                 uxStreamBufferAdd( xLogStreamBuffer, 0, ( const uint8_t * ) cOutputString, xLength );
-                SetThreadPriority( GetCurrentThread(), iOriginalPriority );
+
+                taskEXIT_CRITICAL();
             }
 
             /* xDirectPrint is initialized to pdTRUE, and while it remains true the
